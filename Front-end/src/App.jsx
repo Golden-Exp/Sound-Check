@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './App.css'
 
 function App() {
+  const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:4000'
   const [view, setView] = useState('home')
   const [revealedLines, setRevealedLines] = useState(1)
   const [guess, setGuess] = useState('')
@@ -10,6 +11,18 @@ function App() {
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
   const [isChecking, setIsChecking] = useState(false)
+  const [playlistUrl, setPlaylistUrl] = useState('')
+  const [playlistTracks, setPlaylistTracks] = useState([])
+  const [spotifyUser, setSpotifyUser] = useState(null)
+  const [signInPrompt, setSignInPrompt] = useState(false)
+  const [roundSource, setRoundSource] = useState('random')
+
+  useEffect(() => {
+    fetch(`${apiBase}/api/auth/spotify/status`)
+      .then((response) => response.json())
+      .then((data) => setSpotifyUser(data.authenticated ? data.profile : null))
+      .catch(() => setSpotifyUser(null))
+  }, [apiBase])
 
   const lyricLines = round?.literal_translation?.length
     ? round.literal_translation.map((line) => line.translated_line)
@@ -29,14 +42,69 @@ function App() {
     setResult(null)
     setIsChecking(false)
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/round/random`)
+      const response = await fetch(`${apiBase}/api/round/random`)
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'Could not start a round.')
       setRound(data)
+      setRoundSource('random')
       setView('round')
     } catch (requestError) {
       setError(requestError.message)
       setView('mode-select')
+    }
+  }
+
+  const openPlaylistImport = () => {
+    if (!spotifyUser) {
+      setSignInPrompt(true)
+      return
+    }
+    setView('playlist')
+    setError('')
+    setPlaylistTracks([])
+  }
+
+  const importPlaylist = async (event) => {
+    event.preventDefault()
+    setView('playlist-loading')
+    setError('')
+    try {
+      const response = await fetch(`${apiBase}/api/playlists/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playlist_url: playlistUrl }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Could not import playlist.')
+      setPlaylistTracks(data.tracks)
+      setView('playlist')
+    } catch (requestError) {
+      setError(requestError.message)
+      setView('playlist')
+    }
+  }
+
+  const startPlaylistRound = async () => {
+    setView('loading')
+    setError('')
+    try {
+      const response = await fetch(`${apiBase}/api/round/playlist-random`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tracks: playlistTracks }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Could not start a playlist round.')
+      setRound(data)
+      setRoundSource('playlist')
+      setRevealedLines(1)
+      setGuess('')
+      setSubmitted(false)
+      setResult(null)
+      setView('round')
+    } catch (requestError) {
+      setError(requestError.message)
+      setView('playlist')
     }
   }
 
@@ -50,7 +118,7 @@ function App() {
     setIsChecking(true)
     setError('')
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:4000'}/api/round/guess`, {
+      const response = await fetch(`${apiBase}/api/round/guess`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -75,6 +143,24 @@ function App() {
     setView('home')
     setRound(null)
     setResult(null)
+    setRoundSource('random')
+  }
+
+  const continueRound = () => {
+    if (roundSource === 'playlist') {
+      startPlaylistRound()
+    } else {
+      startRandomRound()
+    }
+  }
+
+  const beginSpotifySignIn = () => {
+    window.location.href = `${apiBase}/api/auth/spotify/login`
+  }
+
+  const signOutSpotify = async () => {
+    await fetch(`${apiBase}/api/auth/spotify/logout`, { method: 'POST' }).catch(() => {})
+    setSpotifyUser(null)
   }
 
   return (
@@ -84,10 +170,10 @@ function App() {
           <span className="brand-mark" aria-hidden="true"><i /><i /><i /><i /></span>
           <span>sound<span className="brand-accent">check</span></span>
         </button>
-        <div className="topbar-meta">
+        <button className="account-control" onClick={() => spotifyUser ? signOutSpotify() : setSignInPrompt(true)}>
           <span className="live-dot" />
-          <span>single player</span>
-        </div>
+          {spotifyUser ? <><img src={spotifyUser.image_url || '/vite.svg'} alt="" /><span>{spotifyUser.display_name || 'Spotify account'}</span></> : <span>sign in</span>}
+        </button>
       </header>
 
       {view === 'home' ? (
@@ -130,14 +216,40 @@ function App() {
               <span><strong>Random Tamil song</strong><small>Let soundcheck choose for you</small></span>
               <span className="mode-arrow">↗</span>
             </button>
-            <button className="mode-option mode-option--disabled" disabled>
+            <button className="mode-option mode-option--active" onClick={openPlaylistImport}>
               <span className="mode-number">02</span>
-              <span><strong>Upload a playlist</strong><small>Spotify playlist support is coming next</small></span>
-              <span className="mode-soon">soon</span>
+              <span><strong>Use a Spotify playlist</strong><small>Paste a playlist link and play from it</small></span>
+              <span className="mode-arrow">↗</span>
             </button>
             {error && <p className="error-message">{error}</p>}
           </div>
           <button className="home-link mode-back" onClick={() => setView('home')}>← Back to home</button>
+        </section>
+      ) : view === 'playlist' || view === 'playlist-loading' ? (
+        <section className="playlist-select" aria-labelledby="playlist-title">
+          <div className="playlist-heading">
+            <p className="eyebrow">Your playlist</p>
+            <h1 id="playlist-title">Bring your<br /><em>songs with you.</em></h1>
+            <p className="intro">Paste a public Spotify playlist link. We&apos;ll scan it, show you the tracks, then choose one for the round.</p>
+          </div>
+          <form className="playlist-form" onSubmit={importPlaylist}>
+            <label htmlFor="playlist-url">Spotify playlist link</label>
+            <div className="playlist-input-row">
+              <input id="playlist-url" value={playlistUrl} onChange={(event) => setPlaylistUrl(event.target.value)} placeholder="https://open.spotify.com/playlist/..." disabled={view === 'playlist-loading'} />
+              <button className="submit-button" type="submit" disabled={view === 'playlist-loading' || !playlistUrl.trim()}>{view === 'playlist-loading' ? 'Scanning...' : 'Scan playlist'} <span>↗</span></button>
+            </div>
+          </form>
+          {error && <p className="error-message">{error}</p>}
+          {playlistTracks.length > 0 && (
+            <div className="playlist-results">
+              <div className="playlist-results-top"><span>{playlistTracks.length} songs found</span><span>ready to play</span></div>
+              <div className="playlist-track-list">
+                {playlistTracks.map((track) => <div className="playlist-track" key={track.id}><img src={track.album_art_url || '/vite.svg'} alt="" /><span><strong>{track.title}</strong><small>{track.artist}</small></span></div>)}
+              </div>
+              <button className="play-button playlist-start" onClick={startPlaylistRound}>Pick a random song <span className="arrow">↗</span></button>
+            </div>
+          )}
+          <button className="home-link mode-back" onClick={() => setView('mode-select')}>← Back to modes</button>
         </section>
       ) : view === 'loading' ? (
         <section className="loading-state" aria-live="polite">
@@ -199,13 +311,25 @@ function App() {
                   </>
                 ) : <p className="result-copy">The first song found for that guess did not match this round.</p>}
                 <div className="result-actions">
-                  <button className="submit-button" onClick={startRandomRound}>Continue <span>↗</span></button>
+                  <button className="submit-button" onClick={continueRound}>Continue <span>↗</span></button>
                   <button className="home-link" onClick={quitRound}>Quit game</button>
                 </div>
               </div>
             </div>
           )}
         </section>
+      )}
+      {signInPrompt && (
+        <div className="result-backdrop" role="dialog" aria-modal="true" aria-labelledby="signin-title">
+          <div className="signin-modal">
+            <button className="result-close" onClick={() => setSignInPrompt(false)} aria-label="Close sign-in prompt">×</button>
+            <p className="eyebrow">Spotify connection</p>
+            <h2 id="signin-title">Want to bring<br /><em>your songs?</em></h2>
+            <p>Sign in with Spotify to scan playlists and play from your own collection.</p>
+            <button className="submit-button" onClick={beginSpotifySignIn}>Sign in with Spotify <span>↗</span></button>
+            <button className="home-link" onClick={() => setSignInPrompt(false)}>Maybe later</button>
+          </div>
+        </div>
       )}
     </main>
   )
